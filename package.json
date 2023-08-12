@@ -1,0 +1,40 @@
+{
+  "name": "@shahadul-17/dispatcher",
+  "version": "0.0.1",
+  "description": "Defines a mechanism for parallel processing and CPU intensive tasks in Node.js",
+  "author": "Md. Shahadul Alam Patwary",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shahadul-17/dispatcher.git"
+  },
+  "keywords": [
+    "dispatcher",
+    "multiprocessing",
+    "parallel processing",
+    "multithreading"
+  ],
+  "bugs": {
+    "url": "https://github.com/shahadul-17/dispatcher/issues"
+  },
+  "homepage": "https://github.com/shahadul-17/dispatcher#readme",
+  "devDependencies": {
+    "@types/node": "^20.4.9",
+    "typescript": "^5.1.6"
+  },
+  "dependencies": {
+    "@shahadul-17/collections": "^0.0.2",
+    "@shahadul-17/random-generator": "^0.0.1",
+    "@shahadul-17/service-provider": "^0.0.1",
+    "@shahadul-17/uid-generator": "^0.0.1",
+    "@shahadul-17/utilities": "^0.0.2"
+  }
+}
