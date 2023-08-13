@@ -9,15 +9,20 @@ export interface IDispatcher {
   isStarted(): boolean;
 
   /**
-   * Gets the total number of threads used by this dispatcher.
+   * Gets the total number of processes used by this dispatcher.
    */
-  getThreadCount(): number;
+  getProcessCount(): number;
+
+  /**
+   * Gets the total number of threads used by each process of this dispatcher.
+   */
+  getThreadCountPerProcess(): number;
 
   /**
    * Dispatches a task.
    * @param taskInformation Task information to be dispatched.
    */
-  dispatchAsync(taskInformation: DispatchableTaskInformation): Promise<any>;
+  dispatchAsync<Type>(taskInformation: DispatchableTaskInformation): Promise<Type>;
 
   /**
    * Starts the dispatcher.
