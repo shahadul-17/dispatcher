@@ -1,6 +1,6 @@
 import { IQueue, Queue, } from "@shahadul-17/collections";
 import { ServiceProvider, } from "@shahadul-17/service-provider";
-import { ArgumentsParser, JsonSerializer, NumberUtilities, ObjectUtilities, StringUtilities, ThreadUtilities } from "@shahadul-17/utilities";
+import { ArgumentsParser, NumberUtilities, ObjectUtilities, StringUtilities, ThreadUtilities } from "@shahadul-17/utilities";
 import { IDispatcherServiceInitializer } from "./dispatcher-service-initializer.i";
 import { DispatcherIpcPayload } from "./dispatcher-ipc-payload.t";
 import { DispatcherIpcFlag } from "./dispatcher-ipc-flag.e";
@@ -34,9 +34,10 @@ export class DispatcherChildProcess {
   }
 
   public async startAsync(): Promise<void> {
-    const childProcess = await this.childProcess.spawnAsync();
-    childProcess.addEventListener(ChildProcessEventType.Spawn, this.onEventOccurredAsync);
-    childProcess.addEventListener(ChildProcessEventType.DataReceive, this.onEventOccurredAsync);
+    this.childProcess.addEventListener(ChildProcessEventType.Spawn, this.onEventOccurredAsync);
+    this.childProcess.addEventListener(ChildProcessEventType.DataReceive, this.onEventOccurredAsync);
+
+    await this.childProcess.spawnAsync();
   }
 
   private async onEventOccurredAsync(eventArguments: ChildProcessEventArguments): Promise<void> {
@@ -48,7 +49,7 @@ export class DispatcherChildProcess {
 
       const request = eventArguments.data as DispatcherIpcPayload;
 
-      if (NumberUtilities.isPositiveNumber(request.flag)) { return; }
+      if (!NumberUtilities.isPositiveNumber(request.flag)) { return; }
 
       await this.onParentProcessRequestReceivedAsync(request);
     }
@@ -70,7 +71,7 @@ export class DispatcherChildProcess {
       const dispatcherServiceInitializer = new dispatcherServiceInitializerClass() as IDispatcherServiceInitializer;
       await dispatcherServiceInitializer.initializeAsync(this.serviceProvider);
     } catch (error) {
-
+      await this.sendErrorAsync(error as Error);
     }
   }
 

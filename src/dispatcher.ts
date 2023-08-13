@@ -9,8 +9,9 @@ import { DispatcherError } from "./dispatcher-error";
 import { DispatcherIpcPayload } from "./dispatcher-ipc-payload.t";
 import { DispatcherIpcFlag } from "./dispatcher-ipc-flag.e";
 
-export class Dispatcher implements IDispatcher {
+const CHILD_PROCESS_FILE_NAME_WITHOUT_EXTENSION = "dispatcher-child-process";
 
+export class Dispatcher implements IDispatcher {
   private _isStarted: boolean = false;
   private childProcessIndex: number = 0;
   private readonly options: DispatcherOptions;
@@ -20,6 +21,14 @@ export class Dispatcher implements IDispatcher {
 
   private constructor(options: DispatcherOptions) {
     this.options = options;
+    this.options.dispatcherServiceInitializerPath = StringUtilities.getDefaultIfUndefinedOrNullOrEmpty(
+      this.options.dispatcherServiceInitializerPath, StringUtilities.getEmptyString(), true);
+
+    if (StringUtilities.isEmpty(this.options.dispatcherServiceInitializerPath)) {
+      throw new Error("Dispatcher service initializer path must be provided.");
+    }
+
+    this.options.dispatcherServiceInitializerPath = `"${this.options.dispatcherServiceInitializerPath}"`;
     this.childProcesses = new Array<IChildProcess>(options.processCount);
 
     // binding methods to current instance...
@@ -108,8 +117,6 @@ export class Dispatcher implements IDispatcher {
   }
 
   private async onChildProcessResponseReceivedAsync(response: DispatcherIpcPayload): Promise<void> {
-    console.log(response);
-
     if (response.flag === DispatcherIpcFlag.Dispatch) {
       this.childProcessResponseMap.set(response.taskId, response);
     }
@@ -126,7 +133,7 @@ export class Dispatcher implements IDispatcher {
   }
 
   private async onEventOccurredAsync(eventArguments: ChildProcessEventArguments): Promise<void> {
-    console.log('EVENT OCCURRED...', eventArguments);
+    // console.log('EVENT OCCURRED...', eventArguments);
 
     if (eventArguments.type === ChildProcessEventType.Spawn) {
       console.log(`Child process with index ${eventArguments.childProcessIndex} has spawned.`);
@@ -135,7 +142,7 @@ export class Dispatcher implements IDispatcher {
 
       const response = eventArguments.data as DispatcherIpcPayload;
 
-      if (NumberUtilities.isPositiveNumber(response.flag)) {
+      if (!NumberUtilities.isPositiveNumber(response.flag)) {
         console.log(`[Child Process ${eventArguments.childProcessIndex}]: ${eventArguments.dataAsString}.`);
 
         return;
@@ -151,7 +158,6 @@ export class Dispatcher implements IDispatcher {
     this._isStarted = true;
 
     const promises: Array<Promise<IChildProcess>> = [];
-
     const eventTypes = [
       ChildProcessEventType.Spawn,
       ChildProcessEventType.Disconnect,
@@ -164,7 +170,9 @@ export class Dispatcher implements IDispatcher {
     for (let i = 0; i < this.options.processCount; ++i) {
       const childProcess: IChildProcess = new ChildProcess({
         childProcessIndex: i,
-        childProcessFileNameWithoutExtension: "dispatcher-child-process",
+        childProcessFileNameWithoutExtension: CHILD_PROCESS_FILE_NAME_WITHOUT_EXTENSION,
+        dispatcherServiceInitializerPath: this.options.dispatcherServiceInitializerPath,
+        dispatcherServiceInitializerClassName: this.options.dispatcherServiceInitializerClassName,
       });
 
       for (const eventType of eventTypes) {

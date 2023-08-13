@@ -80,7 +80,7 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
   private spawnAsParentAsync(): Promise<IChildProcess> {
     return new Promise<IChildProcess>(async (resolve, reject) => {
       const childProcessFilePath = ChildProcess.toProcessFilePath(this.options.childProcessFileNameWithoutExtension);
-      const childProcessArguments: Array<string> = [childProcessFilePath,];
+      const childProcessArguments: Array<string> = [childProcessFilePath, "--isChildProcess", "true"];
 
       for (const [key, value] of Object.entries(this.options)) {
         childProcessArguments.push(`--${key}`);
@@ -96,6 +96,9 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
       });
 
       childProcess.on("spawn", async () => {
+        // assigning child process...
+        this.childProcess = childProcess;
+
         this.dispatchEventListeners({
           type: ChildProcessEventType.Spawn,
           dataAsString: StringUtilities.getEmptyString(),
