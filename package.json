@@ -36,6 +36,6 @@
     "@shahadul-17/random-generator": "^0.0.1",
     "@shahadul-17/service-provider": "^0.0.1",
     "@shahadul-17/uid-generator": "^0.0.1",
-    "@shahadul-17/utilities": "^0.0.2"
+    "@shahadul-17/utilities": "^0.0.6"
   }
 }

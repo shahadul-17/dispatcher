@@ -1,7 +1,7 @@
 import { IChildProcess, ChildProcess, ChildProcessEventType, ChildProcessEventArguments, } from "./child-process";
 import { NumberUtilities, ObjectUtilities, StringUtilities, ThreadUtilities } from "@shahadul-17/utilities";
 import { UIDGenerator } from "@shahadul-17/uid-generator";
-import { IMap, Map } from "@shahadul-17/collections";
+import { IMap, IQueue, Map, Queue, } from "@shahadul-17/collections";
 import { DispatcherOptions } from "./dispatcher-options.t";
 import { IDispatcher } from "./dispatcher.i";
 import { DispatchableTaskInformation } from "./dispatchable-task-information.t";
@@ -9,14 +9,21 @@ import { DispatcherError } from "./dispatcher-error";
 import { DispatcherIpcPayload } from "./dispatcher-ipc-payload.t";
 import { DispatcherIpcFlag } from "./dispatcher-ipc-flag.e";
 
+const IPC_PAYLOAD_QUEUE_PROCESSOR_SLEEP_TIMEOUT_IN_MILLISECONDS = 5;
+const WAITING_THREAD_SLEEP_TIMEOUT_IN_MILLISECONDS = 5;
+const QUEUE_INITIAL_CAPACITY = 4096;
 const CHILD_PROCESS_FILE_NAME_WITHOUT_EXTENSION = "dispatcher-child-process";
 
 export class Dispatcher implements IDispatcher {
   private _isStarted: boolean = false;
-  private childProcessIndex: number = 0;
+  private lastChildProcessIndex: number = 0;
   private readonly options: DispatcherOptions;
+  private readonly interval: NodeJS.Timer;
   private readonly uidGenerator = UIDGenerator.create();
+  private readonly childProcessesBusyStatus: Array<boolean>;
+  private readonly childProcessesTaskCount: Array<number>;
   private readonly childProcesses: Array<IChildProcess>;
+  private readonly ipcPayloadQueue: IQueue<DispatcherIpcPayload> = new Queue<DispatcherIpcPayload>(QUEUE_INITIAL_CAPACITY);
   private readonly childProcessResponseMap: IMap<string, DispatcherIpcPayload> = new Map<string, DispatcherIpcPayload>();
 
   private constructor(options: DispatcherOptions) {
@@ -29,16 +36,25 @@ export class Dispatcher implements IDispatcher {
     }
 
     this.options.dispatcherServiceInitializerPath = `"${this.options.dispatcherServiceInitializerPath}"`;
+    this.childProcessesBusyStatus = new Array<boolean>(options.processCount);
+    this.childProcessesTaskCount = new Array<number>(options.processCount);
     this.childProcesses = new Array<IChildProcess>(options.processCount);
 
     // binding methods to current instance...
     this.isStarted = this.isStarted.bind(this);
     this.getProcessCount = this.getProcessCount.bind(this);
     this.getThreadCountPerProcess = this.getThreadCountPerProcess.bind(this);
+    this.getChildProcessByIndex = this.getChildProcessByIndex.bind(this);
+    this.getNextAvailableChildProcessAsync = this.getNextAvailableChildProcessAsync.bind(this);
     this.dispatchAsync = this.dispatchAsync.bind(this);
-    this.startAsync = this.startAsync.bind(this);
-    this.stopAsync = this.stopAsync.bind(this);
+    this.onChildProcessResponseReceivedAsync = this.onChildProcessResponseReceivedAsync.bind(this);
     this.onEventOccurredAsync = this.onEventOccurredAsync.bind(this);
+    this.startAsync = this.startAsync.bind(this);
+    this.processIpcPayloadQueueAsync = this.processIpcPayloadQueueAsync.bind(this);
+    this.stopAsync = this.stopAsync.bind(this);
+
+    this.interval = setInterval(this.processIpcPayloadQueueAsync,
+      IPC_PAYLOAD_QUEUE_PROCESSOR_SLEEP_TIMEOUT_IN_MILLISECONDS);
   }
 
   public isStarted(): boolean {
@@ -53,6 +69,30 @@ export class Dispatcher implements IDispatcher {
     return this.options.threadCountPerProcess;
   }
 
+  private setChildProcessBusyStatusByIndex(isBusy: boolean, index: number): void {
+    if (index < 0 || index >= this.childProcessesBusyStatus.length) {
+      throw new Error(`Child process index ${index} is out of bounds.`);
+    }
+
+    this.childProcessesBusyStatus[index] = isBusy;
+  }
+
+  private incrementChildProcessTaskCountByIndex(index: number): void {
+    if (index < 0 || index >= this.childProcessesBusyStatus.length) {
+      throw new Error(`Child process index ${index} is out of bounds.`);
+    }
+
+    ++this.childProcessesTaskCount[index];
+  }
+
+  private decrementChildProcessTaskCountByIndex(index: number): void {
+    if (index < 0 || index >= this.childProcessesBusyStatus.length) {
+      throw new Error(`Child process index ${index} is out of bounds.`);
+    }
+
+    --this.childProcessesTaskCount[index];
+  }
+
   private async getChildProcessByIndex(index: number): Promise<IChildProcess> {
     if (index < 0 || index >= this.childProcesses.length) {
       throw new Error(`Child process index ${index} is out of bounds.`);
@@ -63,36 +103,63 @@ export class Dispatcher implements IDispatcher {
     return childProcess;
   }
 
-  private async getNextChildProcessAsync(): Promise<IChildProcess> {
-    const childProcess = this.getChildProcessByIndex(this.childProcessIndex);
+  private async getNextAvailableChildProcessAsync(): Promise<undefined | IChildProcess> {
+    // we shall iterate over all the child processes...
+    // for (let i = this.lastChildProcessIndex, count = 0; ; ++i, ++count) {
+    //   if (count == this.childProcesses.length) { break; }
+    //   if (i == this.childProcesses.length) { i = 0; }
 
-    ++this.childProcessIndex;
+    //   // if the child process on the specified index is busy, we shall continue...
+    //   if (this.childProcessesBusyStatus[i] === true) { continue; }
 
-    // if child process index is less than the array length, we shall return the child process...
-    if (this.childProcessIndex < this.childProcesses.length) { return childProcess; }
+    //   // otherwise we shall set the last child process index...
+    //   this.lastChildProcessIndex = i;
 
-    // otherwise, we shall reset the index...
-    this.childProcessIndex = 0;
+    //   console.log('SELECTED CHILD INDEX: ', this.lastChildProcessIndex);
 
-    // and return the child process instance...
-    return childProcess;
+    //   // and we'll also set the busy status to true...
+    //   this.childProcessesBusyStatus[i] = true;
+
+    //   return this.childProcesses[i];
+    // }
+
+    let childIndexWithMinimumTaskCount = -1;
+    let minimumTaskCount = 0;
+
+    // we shall iterate over all the child processes...
+    for (let i = 0; i < this.childProcesses.length; ++i) {
+      // if the child process on the specified index is busy, we shall continue...
+      if (this.childProcessesBusyStatus[i] === true) { continue; }
+      // if minimum task count is greater than the task count of the current index...
+      if (minimumTaskCount >= this.childProcessesTaskCount[i]) {
+        childIndexWithMinimumTaskCount = i;
+        minimumTaskCount = this.childProcessesTaskCount[i];
+      }
+    }
+
+    if (childIndexWithMinimumTaskCount === -1) { return undefined; }
+
+    // otherwise we shall set the busy status to true...
+    this.childProcessesBusyStatus[childIndexWithMinimumTaskCount] = true;
+    ++this.childProcessesTaskCount[childIndexWithMinimumTaskCount];
+
+    return this.childProcesses[childIndexWithMinimumTaskCount];
   }
 
-  public async dispatchAsync<Type>(taskInformation: DispatchableTaskInformation): Promise<Type> {
+  public async dispatchAsync<ServiceClassType, ReturnType>(
+    taskInformation: DispatchableTaskInformation<ServiceClassType, ReturnType>): Promise<ReturnType> {
     const taskId = this.uidGenerator.generate();
-    const childProcess = await this.getNextChildProcessAsync();
-    // we'll send the internal task information to the child process...
-    const isSent = await childProcess.sendAsync<DispatcherIpcPayload>({
+
+    // places the dispatcher IPC payload information to queue...
+    this.ipcPayloadQueue.enqueue({
       flag: DispatcherIpcFlag.Dispatch,
       taskId: taskId,
       methodName: taskInformation.methodName,
       methodArguments: taskInformation.methodArguments,
       serviceName: taskInformation.serviceType.name,
       childProcessIndex: -1,
-      result: childProcess.getOptions().childProcessIndex,
+      result: ObjectUtilities.getEmptyObject(),
     });
-
-    if (!isSent) { throw new Error(`An error occurred while communicating to child process with index ${childProcess.getOptions().childProcessIndex}`); }
 
     let response: undefined | DispatcherIpcPayload;
 
@@ -105,7 +172,7 @@ export class Dispatcher implements IDispatcher {
 
       // returning true will break the wait... 
       return shallCancel;
-    });
+    }, WAITING_THREAD_SLEEP_TIMEOUT_IN_MILLISECONDS);
 
     response = response!;
 
@@ -116,19 +183,26 @@ export class Dispatcher implements IDispatcher {
     return response.result;
   }
 
-  private async onChildProcessResponseReceivedAsync(response: DispatcherIpcPayload): Promise<void> {
-    if (response.flag === DispatcherIpcFlag.Dispatch) {
-      this.childProcessResponseMap.set(response.taskId, response);
+  private async onChildProcessResponseReceivedAsync(payload: DispatcherIpcPayload): Promise<void> {
+    if (payload.flag === DispatcherIpcFlag.Available) {
+      this.setChildProcessBusyStatusByIndex(false, payload.childProcessIndex);
     }
-    if (response.flag === DispatcherIpcFlag.Error) {
+    else if (payload.flag === DispatcherIpcFlag.Dispatch) {
+      this.decrementChildProcessTaskCountByIndex(payload.childProcessIndex);
+
+      this.childProcessResponseMap.set(payload.taskId, payload);
+    }
+    else if (payload.flag === DispatcherIpcFlag.Error) {
       // if response does not contain task id...
-      if (StringUtilities.isUndefinedOrNullOrEmpty(response.taskId, true)) {
-        console.log("An error occurred.", response.result);
+      if (StringUtilities.isUndefinedOrNullOrEmpty(payload.taskId, true)) {
+        console.log("An error occurred.", payload.result);
 
         return;
       }
 
-      this.childProcessResponseMap.set(response.taskId, response);
+      this.decrementChildProcessTaskCountByIndex(payload.childProcessIndex);
+
+      this.childProcessResponseMap.set(payload.taskId, payload);
     }
   }
 
@@ -143,7 +217,7 @@ export class Dispatcher implements IDispatcher {
       const response = eventArguments.data as DispatcherIpcPayload;
 
       if (!NumberUtilities.isPositiveNumber(response.flag)) {
-        console.log(`[Child Process ${eventArguments.childProcessIndex}]: ${eventArguments.dataAsString}.`);
+        console.log(`[Child Process ${eventArguments.childProcessIndex}]: Unknown payload flag ${response.flag}.`);
 
         return;
       }
@@ -168,6 +242,8 @@ export class Dispatcher implements IDispatcher {
     ];
 
     for (let i = 0; i < this.options.processCount; ++i) {
+      this.childProcessesBusyStatus[i] = false;
+      this.childProcessesTaskCount[i] = 0;
       const childProcess: IChildProcess = new ChildProcess({
         childProcessIndex: i,
         childProcessFileNameWithoutExtension: CHILD_PROCESS_FILE_NAME_WITHOUT_EXTENSION,
@@ -195,6 +271,64 @@ export class Dispatcher implements IDispatcher {
     for (let i = 0; i < childProcesses.length; ++i) {
       this.childProcesses[i] = childProcesses[i];
     }
+
+    // processes the IPC payload queue...
+    // NOTE: WE SHALL NOT AWAIT BECAUSE WE WANT THIS
+    // METHOD TO RUN ASYNCHRONOUSLY...
+    this.processIpcPayloadQueueAsync();
+  }
+
+  private async processIpcPayloadQueueAsync(): Promise<void> {
+    if (!this._isStarted) {
+      clearInterval(this.interval);
+
+      return;
+    }
+
+    // if there is no more IPC payloads in the queue, we shall return...
+    if (this.ipcPayloadQueue.isEmpty()) { return; }
+
+    // otherwise, we have one or more IPC payloads to process...
+    // so, we shall try to get the next available child process...
+    const childProcess = await this.getNextAvailableChildProcessAsync();
+
+    // if no process is available, we shall return...
+    if (!ObjectUtilities.isObject(childProcess)) { return; }
+
+    // now we shall retrieve the next available IPC payload in queue...
+    const ipcPayload = this.ipcPayloadQueue.dequeue();
+
+    // if IPC payload is not an object (which is very very unlikely)...
+    if (!ObjectUtilities.isObject(ipcPayload)) {
+      // we must set the child process busy status...
+      this.setChildProcessBusyStatusByIndex(false, childProcess!.getChildProcessIndex());
+      this.decrementChildProcessTaskCountByIndex(childProcess!.getChildProcessIndex());
+
+      // and return...
+      return;
+    }
+
+    // we'll send the internal task information to the child process...
+    const isSent = await childProcess!.sendAsync(ipcPayload!);
+
+    if (isSent) { return; }
+
+    this.setChildProcessBusyStatusByIndex(false, childProcess!.getChildProcessIndex());
+    this.decrementChildProcessTaskCountByIndex(childProcess!.getChildProcessIndex());
+
+    console.warn(`An error occurred while communicating to child process with index ${childProcess!.getChildProcessIndex()}.`);
+
+    this.childProcessResponseMap.set(ipcPayload!.taskId, {
+      flag: DispatcherIpcFlag.Error,
+      taskId: ipcPayload!.taskId,
+      result: ObjectUtilities.clone({
+        data: new Error(`An error occurred while communicating to child process with index ${childProcess!.getChildProcessIndex()}.`),
+      }),
+      childProcessIndex: childProcess!.getChildProcessIndex(),
+      methodName: ipcPayload!.methodName,
+      serviceName: ipcPayload!.serviceName,
+      methodArguments: ipcPayload!.methodArguments,
+    });
   }
 
   public async stopAsync(): Promise<void> {

@@ -1,15 +1,21 @@
 import { ChildProcessWithoutNullStreams, spawn, } from "child_process";
-import { FileUtilities, JsonSerializer, ArgumentsParser, StringUtilities, ObjectUtilities, } from "@shahadul-17/utilities";
+import {
+  FileUtilities, JsonSerializer, ArgumentsParser, StringUtilities,
+  ObjectUtilities, IStreamReader, StreamReader,
+} from "@shahadul-17/utilities";
 import { EventManager, } from "@shahadul-17/event-manager";
 import { IChildProcess } from "./child-process.i";
 import { ChildProcessOptions } from "./child-process-options.t";
 import { ChildProcessEventType } from "./child-process-event-type.e";
 import { ChildProcessEventArguments } from "./child-process-event-args";
 
+const STREAM_READER_LINE_DELIMITER = "<--- END OF LINE --->";
+
 export class ChildProcess extends EventManager<ChildProcessEventType, ChildProcessEventArguments> implements IChildProcess {
 
   private readonly _isChildProcess: boolean;
   private readonly options: ChildProcessOptions;
+  private streamReader: IStreamReader = new StreamReader();
   private childProcess: undefined | ChildProcessWithoutNullStreams;
 
   constructor(options: ChildProcessOptions) {
@@ -17,6 +23,7 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
 
     this.options = options;
     this._isChildProcess = ArgumentsParser.getArgument("isChildProcess") === "true";
+    this.streamReader.setLineDelimiter(STREAM_READER_LINE_DELIMITER);
 
     // binding methods...
     this.isChildProcess = this.isChildProcess.bind(this);
@@ -47,7 +54,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
     let isSent = false;
 
     try {
-      const dataAsJson = JsonSerializer.serialize(data, { shallDeepSanitize: true, });
+      let dataAsJson = JsonSerializer.serialize(data, { shallDeepSanitize: true, });
+      dataAsJson = `${dataAsJson}${STREAM_READER_LINE_DELIMITER}`;
 
       // if current process is the child process...
       if (this.isChildProcess()) {
@@ -101,8 +109,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
 
         this.dispatchEventListeners({
           type: ChildProcessEventType.Spawn,
-          dataAsString: StringUtilities.getEmptyString(),
-          rawData: ObjectUtilities.getEmptyObject(),
+          // dataAsString: StringUtilities.getEmptyString(),
+          // rawData: ObjectUtilities.getEmptyObject(),
           isErrorData: false,
           data: ObjectUtilities.getEmptyObject(),
           childProcessIndex: this.options.childProcessIndex,
@@ -121,8 +129,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
         for (const eventType of eventTypes) {
           this.dispatchEventListeners({
             type: eventType,
-            dataAsString: StringUtilities.getEmptyString(),
-            rawData: ObjectUtilities.getEmptyObject(),
+            // dataAsString: StringUtilities.getEmptyString(),
+            // rawData: ObjectUtilities.getEmptyObject(),
             isErrorData: false,
             data: ObjectUtilities.getEmptyObject(),
             childProcessIndex: this.options.childProcessIndex,
@@ -143,8 +151,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
         for (const eventType of eventTypes) {
           this.dispatchEventListeners({
             type: eventType,
-            dataAsString: StringUtilities.getEmptyString(),
-            rawData: ObjectUtilities.getEmptyObject(),
+            // dataAsString: StringUtilities.getEmptyString(),
+            // rawData: ObjectUtilities.getEmptyObject(),
             isErrorData: false,
             data: ObjectUtilities.getEmptyObject(),
             childProcessIndex: this.options.childProcessIndex,
@@ -167,8 +175,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
         for (const eventType of eventTypes) {
           this.dispatchEventListeners({
             type: eventType,
-            dataAsString: StringUtilities.getEmptyString(),
-            rawData: ObjectUtilities.getEmptyObject(),
+            // dataAsString: StringUtilities.getEmptyString(),
+            // rawData: ObjectUtilities.getEmptyObject(),
             isErrorData: false,
             data: ObjectUtilities.getEmptyObject(),
             childProcessIndex: this.options.childProcessIndex,
@@ -184,8 +192,8 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
       childProcess.on("error", async error => {
         this.dispatchEventListeners({
           type: ChildProcessEventType.Error,
-          dataAsString: StringUtilities.getEmptyString(),
-          rawData: ObjectUtilities.getEmptyObject(),
+          // dataAsString: StringUtilities.getEmptyString(),
+          // rawData: ObjectUtilities.getEmptyObject(),
           isErrorData: false,
           data: ObjectUtilities.getEmptyObject(),
           childProcessIndex: this.options.childProcessIndex,
@@ -196,21 +204,21 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
       });
 
       // adding data receive listeners...
-      childProcess.stdout.on("data", rawData => this.onDataReceivedAsync(rawData));
-      childProcess.stderr.on("data", rawData => this.onDataReceivedAsync(rawData, true));
+      childProcess.stdout.on("data", chunk => this.onDataReceivedAsync(chunk));
+      childProcess.stderr.on("data", chunk => this.onDataReceivedAsync(chunk, true));
     });
   }
 
   private spawnAsChildAsync(): Promise<IChildProcess> {
     return new Promise<IChildProcess>(async (resolve, reject) => {
-      process.stdin.on("data", rawData => this.onDataReceivedAsync(rawData));
+      process.stdin.on("data", chunk => this.onDataReceivedAsync(chunk));
       // process.on("exit", this.onParentProcessExitedAsync);
       // process.on("close", this.onParentProcessClosedAsync);
 
       this.dispatchEventListeners({
         type: ChildProcessEventType.Spawn,
-        dataAsString: StringUtilities.getEmptyString(),
-        rawData: ObjectUtilities.getEmptyObject(),
+        // dataAsString: StringUtilities.getEmptyString(),
+        // rawData: ObjectUtilities.getEmptyObject(),
         isErrorData: false,
         data: ObjectUtilities.getEmptyObject(),
         childProcessIndex: this.options.childProcessIndex,
@@ -228,49 +236,22 @@ export class ChildProcess extends EventManager<ChildProcessEventType, ChildProce
     return this.spawnAsParentAsync();
   }
 
-  private async onDataReceivedAsync(rawData: any, isErrorData = false): Promise<void> {
-    let dataAsString: undefined | string = undefined;
-
-    if (rawData instanceof Buffer) {
-      dataAsString = rawData.toString("utf-8");
-    } else if (StringUtilities.isString(rawData)) {
-      dataAsString = rawData;
-    }
-
-    dataAsString = StringUtilities.getDefaultIfUndefinedOrNullOrEmpty(
-      dataAsString, StringUtilities.getEmptyString(), true);
+  private async onDataReceivedAsync(chunk: any, isErrorData = false): Promise<void> {
+    this.streamReader.append(chunk);
 
     let data: any;
 
-    // if the string is JSON...
-    if (StringUtilities.isJson(dataAsString!)) {
-      try {
-        data = JsonSerializer.deserialize<any>(dataAsString!);
-      } catch (error) {
-        // we shall dispatch error events...
-        this.dispatchEventListeners({
-          type: ChildProcessEventType.Error,
-          dataAsString: dataAsString!,
-          rawData: rawData,
-          isErrorData: isErrorData,
-          data: ObjectUtilities.getEmptyObject(),
-          error: error as Error,
-          childProcessIndex: this.options.childProcessIndex,
-        });
-
-        return;
-      }
+    while (ObjectUtilities.isObject(data = this.streamReader.readObject())) {
+      // otherwise dispatch data receive event...
+      this.dispatchEventListeners({
+        type: ChildProcessEventType.DataReceive,
+        // dataAsString: dataAsString!,
+        // rawData: chunk,
+        isErrorData: isErrorData,
+        data: data,
+        childProcessIndex: this.options.childProcessIndex,
+      });
     }
-
-    // otherwise dispatch data recei
-    this.dispatchEventListeners({
-      type: ChildProcessEventType.DataReceive,
-      dataAsString: dataAsString!,
-      rawData: rawData,
-      isErrorData: isErrorData,
-      data: data,
-      childProcessIndex: this.options.childProcessIndex,
-    });
   }
 
   private static toProcessFilePath(fileNameWithoutExtension: string): string {

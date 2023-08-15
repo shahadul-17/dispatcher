@@ -22,7 +22,7 @@ export interface IDispatcher {
    * Dispatches a task.
    * @param taskInformation Task information to be dispatched.
    */
-  dispatchAsync<Type>(taskInformation: DispatchableTaskInformation): Promise<Type>;
+  dispatchAsync<ServiceClassType, ReturnType>(taskInformation: DispatchableTaskInformation<ServiceClassType, ReturnType>): Promise<ReturnType>;
 
   /**
    * Starts the dispatcher.
