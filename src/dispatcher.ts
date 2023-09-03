@@ -1,4 +1,4 @@
-import { FileUtilities, ObjectUtilities, StringUtilities } from "@shahadul-17/utilities";
+import { FileUtilities, NumberUtilities, ObjectUtilities, StringUtilities } from "@shahadul-17/utilities";
 import { UIDGenerator } from "@shahadul-17/uid-generator";
 import { DispatcherIpcPayload } from "./dispatcher-ipc-payload.t";
 import { DispatcherIpcPayloadFlag } from "./dispatcher-ipc-payload-flag.e";
@@ -7,6 +7,7 @@ import { DispatcherOptions } from "./dispatcher-options.t";
 import { IDispatcher } from "./dispatcher.i";
 import { IProcess, IProcessEventArguments, Process, ProcessEventType } from "./process";
 import { ServiceType } from "@shahadul-17/service-provider";
+import { ILogger, Logger, LogLevel } from "@shahadul-17/logger";
 
 const CHILD_PROCESS_FILE_NAME_WITHOUT_EXTENSION = "dispatcher-child-process";
 
@@ -14,6 +15,7 @@ export class Dispatcher implements IDispatcher {
 
   private isStarting: boolean = false;
   private _isStarted: boolean = false;
+  private readonly logger: ILogger<Dispatcher> = new Logger<Dispatcher>(Dispatcher.name);
   private readonly _options: DispatcherOptions;
   private readonly uidGenerator = UIDGenerator.create();
   private readonly processes: Array<IProcess>;
@@ -27,15 +29,20 @@ export class Dispatcher implements IDispatcher {
       throw new Error("Invalid service initializer path provided.");
     }
 
-    this.processes = new Array<IProcess>(options.processCount);
+    if (!NumberUtilities.isPositiveNumber(this.options.processCount)) {
+      this.options.processCount = 1;
+    }
+
+    this.processes = new Array<IProcess>(this.options.processCount);
 
     // binding methods...
+    this.log = this.log.bind(this);
     this.getLeastBusyProcess = this.getLeastBusyProcess.bind(this);
     this.onChildProcessLogReceivedAsync = this.onChildProcessLogReceivedAsync.bind(this);
     this.onChildProcessResponseReceivedAsync = this.onChildProcessResponseReceivedAsync.bind(this);
     this.onEventOccurredAsync = this.onEventOccurredAsync.bind(this);
     this.dispatchAsync = this.dispatchAsync.bind(this);
-    this.getService = this.getService.bind(this);
+    this.get = this.get.bind(this);
     this.startAsync = this.startAsync.bind(this);
     this.stopAsync = this.stopAsync.bind(this);
   }
@@ -50,6 +57,10 @@ export class Dispatcher implements IDispatcher {
 
   public get options(): DispatcherOptions {
     return this._options;
+  }
+
+  private log(logLevel: LogLevel, ...parameters: Array<any>): void {
+    this.logger.log(logLevel, ...parameters);
   }
 
   private getLeastBusyProcess(): IProcess {
@@ -161,7 +172,7 @@ export class Dispatcher implements IDispatcher {
     });
   }
 
-  public getService<Type>(serviceType: ServiceType<Type>, scopeName?: string): Type {
+  public get<Type>(serviceType: ServiceType<Type>, scopeName?: string): Type {
     const context = this;
     const serviceProxy = new Proxy(ObjectUtilities.getEmptyObject(), {
       get(_, property) {
@@ -181,7 +192,9 @@ export class Dispatcher implements IDispatcher {
   }
 
   private async onChildProcessLogReceivedAsync(payload: DispatcherIpcPayload): Promise<void> {
-    console.log(`Process [${payload.processId}]:`, ...payload.result);
+    const { logLevel, parameters, } = payload.result;
+
+    this.log(logLevel, `[Process ${payload.processId}]`, ...parameters);
   }
 
   private async onChildProcessResponseReceivedAsync(payload: DispatcherIpcPayload): Promise<void> { }
@@ -199,11 +212,11 @@ export class Dispatcher implements IDispatcher {
       } else if (payload.flag === DispatcherIpcPayloadFlag.Error) {
         // if the payload does not contain an ID...
         if (StringUtilities.isUndefinedOrNullOrEmpty(payload.payloadId, true)) {
-          console.log(`Process [${eventArguments.processId}]: The following error occurred.`, payload.result);
+          this.log(LogLevel.Error, `[Process ${eventArguments.processId}]: The following error occurred.`, payload.result);
         }
       }
     } else if (eventArguments.type === ProcessEventType.Error) {
-      console.error(`Process [${eventArguments.processId}]: The following error occurred.`, eventArguments.error);
+      this.log(LogLevel.Error, `[Process ${eventArguments.processId}]: The following error occurred.`, eventArguments.error);
     }
   }
 

@@ -32,7 +32,7 @@ export interface IDispatcher {
    * @param scopeName Name of the scope.
    * @returns The requested service.
    */
-  getService<Type>(serviceType: ServiceType<Type>, scopeName?: string): Type;
+  get<Type>(serviceType: ServiceType<Type>, scopeName?: string): Type;
 
   /**
    * Starts the dispatcher.

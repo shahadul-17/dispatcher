@@ -1,3 +1,4 @@
+import { ILogger, LogLevel, Logger, } from "@shahadul-17/logger";
 import { NumberUtilities, ObjectUtilities, StringUtilities, ThreadUtilities } from "@shahadul-17/utilities";
 import { IProcess, IProcessEventArguments, Process, ProcessEventType } from "./process";
 import { IServiceProvider, ServiceProvider } from "@shahadul-17/service-provider";
@@ -8,6 +9,7 @@ import { IDispatcherServiceInitializer } from "./dispatcher-service-initializer.
 export class DispatcherChildProcess {
 
   private isDispatcherServiceInitializerInitialized: boolean = false;
+  private readonly logger: ILogger<DispatcherChildProcess> = new Logger<DispatcherChildProcess>(DispatcherChildProcess);
   private readonly process: IProcess;
   private readonly serviceProvider: IServiceProvider;
 
@@ -22,7 +24,7 @@ export class DispatcherChildProcess {
     this.startAsync = this.startAsync.bind(this);
     this.onEventOccurredAsync = this.onEventOccurredAsync.bind(this);
     this.onSpawnedAsync = this.onSpawnedAsync.bind(this);
-    this.logAsync = this.logAsync.bind(this);
+    this.sendLogAsync = this.sendLogAsync.bind(this);
     this.sendAsync = this.sendAsync.bind(this);
     this.sendErrorAsync = this.sendErrorAsync.bind(this);
   }
@@ -43,7 +45,7 @@ export class DispatcherChildProcess {
       }
 
       const dispatcherServiceInitializer = new serviceInitializerClass() as IDispatcherServiceInitializer;
-      await dispatcherServiceInitializer.initializeAsync(this.serviceProvider);
+      await dispatcherServiceInitializer.initializeAsync(this.process.processId!, this.serviceProvider);
     } catch (error) {
       this.isDispatcherServiceInitializerInitialized = false;
 
@@ -55,8 +57,6 @@ export class DispatcherChildProcess {
     if (payload.flag !== DispatcherIpcPayloadFlag.Dispatch) { return; }
 
     try {
-      await this.initializeDispatcherServiceInitializerIfNotInitializedAsync();
-
       const service: any = this.serviceProvider.getByName(payload.serviceName!, payload.serviceScopeName);
       const method = service[payload.methodName!];
 
@@ -85,7 +85,8 @@ export class DispatcherChildProcess {
   }
 
   private async onSpawnedAsync(eventArguments: IProcessEventArguments): Promise<void> {
-    await this.logAsync(`Child process with ID '${this.process.processId}' has spawned.`);
+    await this.initializeDispatcherServiceInitializerIfNotInitializedAsync();
+    await this.sendLogAsync(LogLevel.Information, `Child process with ID '${this.process.processId}' has spawned.`);    
   }
 
   private async onEventOccurredAsync(eventArguments: IProcessEventArguments): Promise<void> {
@@ -108,15 +109,7 @@ export class DispatcherChildProcess {
 
     await this.process.spawnAsync();
 
-    global.console.log = this.logAsync;
-  }
-
-  private logAsync(...parameters: Array<any>): Promise<boolean> {
-    return this.sendAsync({
-      flag: DispatcherIpcPayloadFlag.Log,
-      processId: this.process.processId,
-      result: parameters,
-    });
+    // global.console.log = this.sendLogAsync;
   }
 
   private async sendAsync(payload: DispatcherIpcPayload): Promise<boolean> {
@@ -129,6 +122,14 @@ export class DispatcherChildProcess {
     }
 
     return isSent;
+  }
+
+  private sendLogAsync(logLevel: LogLevel, ...parameters: Array<any>): Promise<boolean> {
+    return this.sendAsync({
+      flag: DispatcherIpcPayloadFlag.Log,
+      processId: this.process.processId,
+      result: { logLevel, parameters, },
+    });
   }
 
   private async sendErrorAsync(error: Error, payloadId?: string): Promise<boolean> {
