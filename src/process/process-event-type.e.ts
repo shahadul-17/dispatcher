@@ -1,4 +1,4 @@
-export enum ChildProcessEventType {
+export enum ProcessEventType {
   None = "NONE",
   Spawn = "SPAWN",
   Disconnect = "DISCONNECT",

@@ -1,191 +1,155 @@
-import { IQueue, Queue, } from "@shahadul-17/collections";
-import { ServiceProvider, } from "@shahadul-17/service-provider";
-import { ArgumentsParser, NumberUtilities, ObjectUtilities, StringUtilities, } from "@shahadul-17/utilities";
-import { IDispatcherServiceInitializer } from "./dispatcher-service-initializer.i";
+import { NumberUtilities, ObjectUtilities, StringUtilities, ThreadUtilities } from "@shahadul-17/utilities";
+import { IProcess, IProcessEventArguments, Process, ProcessEventType } from "./process";
+import { IServiceProvider, ServiceProvider } from "@shahadul-17/service-provider";
 import { DispatcherIpcPayload } from "./dispatcher-ipc-payload.t";
-import { DispatcherIpcFlag } from "./dispatcher-ipc-flag.e";
-import { IChildProcess, ChildProcess, ChildProcessEventType, ChildProcessEventArguments } from "./child-process";
-
-const IPC_PAYLOAD_QUEUE_PROCESSOR_SLEEP_TIMEOUT_IN_MILLISECONDS = 5;
-const QUEUE_INITIAL_CAPACITY = 4096;
+import { DispatcherIpcPayloadFlag } from "./dispatcher-ipc-payload-flag.e";
+import { IDispatcherServiceInitializer } from "./dispatcher-service-initializer.i";
 
 export class DispatcherChildProcess {
 
-  private isProcessingPayload = false;
-  private readonly interval: NodeJS.Timer;
-  private childProcess: IChildProcess = new ChildProcess({
-    childProcessIndex: -1,
-    childProcessFileNameWithoutExtension: StringUtilities.getEmptyString(),
-  });
-
-  private dispatcherServiceInitializerPath: string = StringUtilities.getEmptyString();
-  private dispatcherServiceInitializerClassName: string = StringUtilities.getEmptyString();
-
-  private readonly ipcPayloadQueue: IQueue<DispatcherIpcPayload> = new Queue<DispatcherIpcPayload>(QUEUE_INITIAL_CAPACITY);
-  private readonly serviceProvider = ServiceProvider.getInstance();
+  private isDispatcherServiceInitializerInitialized: boolean = false;
+  private readonly process: IProcess;
+  private readonly serviceProvider: IServiceProvider;
 
   constructor() {
+    this.process = new Process();
+    this.serviceProvider = ServiceProvider.getInstance();
+
     // binding methods to current instance...
+    this.initializeDispatcherServiceInitializerIfNotInitializedAsync
+      = this.initializeDispatcherServiceInitializerIfNotInitializedAsync.bind(this);
+    this.onRequestReceivedAsync = this.onRequestReceivedAsync.bind(this);
     this.startAsync = this.startAsync.bind(this);
     this.onEventOccurredAsync = this.onEventOccurredAsync.bind(this);
     this.onSpawnedAsync = this.onSpawnedAsync.bind(this);
-    this.processIpcPayloadAsync = this.processIpcPayloadAsync.bind(this);
+    this.logAsync = this.logAsync.bind(this);
     this.sendAsync = this.sendAsync.bind(this);
     this.sendErrorAsync = this.sendErrorAsync.bind(this);
-    this.onParentProcessExitedAsync = this.onParentProcessExitedAsync.bind(this);
-    this.onParentProcessClosedAsync = this.onParentProcessClosedAsync.bind(this);
-    this.processIpcPayloadQueueAsync = this.processIpcPayloadQueueAsync.bind(this);
-
-    this.interval = setInterval(this.processIpcPayloadQueueAsync,
-      IPC_PAYLOAD_QUEUE_PROCESSOR_SLEEP_TIMEOUT_IN_MILLISECONDS);
   }
 
-  public async startAsync(): Promise<void> {
-    this.childProcess.addEventListener(ChildProcessEventType.Spawn, this.onEventOccurredAsync);
-    this.childProcess.addEventListener(ChildProcessEventType.DataReceive, this.onEventOccurredAsync);
+  private async initializeDispatcherServiceInitializerIfNotInitializedAsync(): Promise<void> {
+    // we won't re-initialize if already initialized...
+    if (this.isDispatcherServiceInitializerInitialized) { return; }
 
-    await this.childProcess.spawnAsync();
-  }
+    this.isDispatcherServiceInitializerInitialized = true;
 
-  private async onEventOccurredAsync(eventArguments: ChildProcessEventArguments): Promise<void> {
-    if (eventArguments.type === ChildProcessEventType.Spawn) {
-      await this.onSpawnedAsync(eventArguments);
+    try {
+      let serviceInitializerClass = require(this.process.options.commandLineArguments!.serviceInitializerPath!);
+      const serviceInitializerClassName = StringUtilities.getDefaultIfUndefinedOrNullOrEmpty(
+        this.process.options.commandLineArguments!.serviceInitializerClassName!, StringUtilities.getEmptyString(), true);
+
+      if (!StringUtilities.isEmpty(serviceInitializerClassName)) {
+        serviceInitializerClass = serviceInitializerClass[serviceInitializerClassName];
+      }
+
+      const dispatcherServiceInitializer = new serviceInitializerClass() as IDispatcherServiceInitializer;
+      await dispatcherServiceInitializer.initializeAsync(this.serviceProvider);
+    } catch (error) {
+      this.isDispatcherServiceInitializerInitialized = false;
+
+      throw error;
     }
-    else if (eventArguments.type === ChildProcessEventType.DataReceive) {
+  }
+
+  private async onRequestReceivedAsync(payload: DispatcherIpcPayload): Promise<void> {
+    if (payload.flag !== DispatcherIpcPayloadFlag.Dispatch) { return; }
+
+    try {
+      await this.initializeDispatcherServiceInitializerIfNotInitializedAsync();
+
+      const service: any = this.serviceProvider.getByName(payload.serviceName!, payload.serviceScopeName);
+      const method = service[payload.methodName!];
+
+      if (typeof method !== "function") {
+        throw new Error(`Requested method, '${payload.methodName}' does not belong to the service, '${payload.serviceName}'.`);
+      }
+
+      const methodArguments = Array.isArray(payload.methodArguments)
+        ? payload.methodArguments : [];
+      let result: any = method.call(service, ...methodArguments);
+
+      if (result instanceof Promise) { result = await result; }
+
+      await this.sendAsync({
+        flag: DispatcherIpcPayloadFlag.Dispatch,
+        payloadId: payload.payloadId,
+        processId: this.process.processId!,
+        result: result,
+        methodName: payload.methodName,
+        serviceName: payload.serviceName,
+        methodArguments: methodArguments,
+      });
+    } catch (error) {
+      await this.sendErrorAsync(error as Error, payload.payloadId);
+    }
+  }
+
+  private async onSpawnedAsync(eventArguments: IProcessEventArguments): Promise<void> {
+    await this.logAsync(`Child process with ID '${this.process.processId}' has spawned.`);
+  }
+
+  private async onEventOccurredAsync(eventArguments: IProcessEventArguments): Promise<void> {
+    if (eventArguments.type === ProcessEventType.Spawn) {
+      await this.onSpawnedAsync(eventArguments);
+    } else if (eventArguments.type === ProcessEventType.DataReceive) {
       if (!ObjectUtilities.isObject(eventArguments.data)) { return; }
 
       const payload = eventArguments.data as DispatcherIpcPayload;
 
       if (!NumberUtilities.isPositiveNumber(payload.flag)) { return; }
 
-      // we shall place the payload to the queue...
-      this.ipcPayloadQueue.enqueue(payload);
-
-      await this.sendAsync({
-        flag: DispatcherIpcFlag.Available,
-        taskId: payload.taskId,
-        childProcessIndex: this.childProcess.getChildProcessIndex(),
-        result: undefined,
-        methodName: StringUtilities.getEmptyString(),
-        serviceName: StringUtilities.getEmptyString(),
-        methodArguments: undefined,
-      });
+      await this.onRequestReceivedAsync(payload);
     }
   }
 
-  private async onSpawnedAsync(eventArguments: ChildProcessEventArguments): Promise<void> {
-    try {
-      this.dispatcherServiceInitializerPath = ArgumentsParser.getArgument("dispatcherServiceInitializerPath");
-      this.dispatcherServiceInitializerClassName = ArgumentsParser.getArgument("dispatcherServiceInitializerClassName");
+  public async startAsync(): Promise<void> {
+    this.process.addEventListener(ProcessEventType.Spawn, this.onEventOccurredAsync);
+    this.process.addEventListener(ProcessEventType.DataReceive, this.onEventOccurredAsync);
 
-      this.dispatcherServiceInitializerClassName = StringUtilities.getDefaultIfUndefinedOrNullOrEmpty(
-        this.dispatcherServiceInitializerClassName, StringUtilities.getEmptyString(), true);
-      let dispatcherServiceInitializerClass = require(this.dispatcherServiceInitializerPath);
+    await this.process.spawnAsync();
 
-      if (!StringUtilities.isEmpty(this.dispatcherServiceInitializerClassName)) {
-        dispatcherServiceInitializerClass = dispatcherServiceInitializerClass[this.dispatcherServiceInitializerClassName];
-      }
-
-      const dispatcherServiceInitializer = new dispatcherServiceInitializerClass() as IDispatcherServiceInitializer;
-      await dispatcherServiceInitializer.initializeAsync(this.serviceProvider);
-    } catch (error) {
-      await this.sendErrorAsync(error as Error);
-    }
+    global.console.log = this.logAsync;
   }
 
-  private async processIpcPayloadAsync(payload: DispatcherIpcPayload): Promise<void> {
-    if (payload.flag === DispatcherIpcFlag.Dispatch) {
-      try {
-        const service: any = this.serviceProvider.getByName(payload.serviceName);
-        const method = service[payload.methodName];
-
-        if (typeof method !== "function") {
-          throw new Error(`Requested method, '${payload.methodName}' was not found.`);
-        }
-
-        const methodArguments = Array.isArray(payload.methodArguments)
-          ? payload.methodArguments : [];
-        let result: any = method.call(service, ...methodArguments);
-
-        if (result instanceof Promise) { result = await result; }
-
-        await this.sendAsync({
-          flag: DispatcherIpcFlag.Dispatch,
-          taskId: payload.taskId,
-          childProcessIndex: this.childProcess.getChildProcessIndex(),
-          result: result,
-          methodName: StringUtilities.getEmptyString(),
-          serviceName: StringUtilities.getEmptyString(),
-          methodArguments: undefined,
-        });
-      } catch (error) {
-        await this.sendErrorAsync(error as Error, payload.taskId);
-      }
-    }
+  private logAsync(...parameters: Array<any>): Promise<boolean> {
+    return this.sendAsync({
+      flag: DispatcherIpcPayloadFlag.Log,
+      processId: this.process.processId,
+      result: parameters,
+    });
   }
 
-  private async sendAsync(response: DispatcherIpcPayload): Promise<boolean> {
+  private async sendAsync(payload: DispatcherIpcPayload): Promise<boolean> {
     let isSent = false;
 
     try {
-      isSent = await this.childProcess.sendAsync(response);
+      isSent = await this.process.sendAsync(payload);
     } catch (error) {
-      await this.sendErrorAsync(error as Error, response.taskId);
+      await this.sendErrorAsync(error as Error, payload.payloadId);
     }
 
     return isSent;
   }
 
-  private async sendErrorAsync(error: Error, taskId?: string): Promise<boolean> {
+  private async sendErrorAsync(error: Error, payloadId?: string): Promise<boolean> {
     const sanitizedError = ObjectUtilities.sanitize({
       data: error,
       shallDeepSanitize: true,
     });
-    const response: DispatcherIpcPayload = {
-      flag: DispatcherIpcFlag.Error,
-      childProcessIndex: this.childProcess.getChildProcessIndex(),
+    const payload: DispatcherIpcPayload = {
+      flag: DispatcherIpcPayloadFlag.Error,
+      processId: this.process.processId,
       result: sanitizedError,
-      taskId: StringUtilities.isString(taskId)
-        ? taskId! : StringUtilities.getEmptyString(),
-      methodName: StringUtilities.getEmptyString(),
-      serviceName: StringUtilities.getEmptyString(),
-      methodArguments: undefined,
+      payloadId: payloadId,
     };
-    const isSent = await this.sendAsync(response);
+    const isSent = await this.sendAsync(payload);
 
     return isSent;
   }
-
-  private async processIpcPayloadQueueAsync(): Promise<void> {
-    if (this.isProcessingPayload) { return; }
-
-    this.isProcessingPayload = true;
-
-    // we shall retrieve the next available IPC payload in queue...
-    const payload = this.ipcPayloadQueue.dequeue();
-
-    // if no payload is available, we shall return...
-    if (!ObjectUtilities.isObject(payload)) {
-      this.isProcessingPayload = false;
-
-      return;
-    }
-
-    // we'll process the payload...
-    await this.processIpcPayloadAsync(payload!);
-
-    this.isProcessingPayload = false;
-  }
-
-  private async onParentProcessExitedAsync(code: number | null,
-    signal: NodeJS.Signals | null): Promise<void> { }
-
-  private async onParentProcessClosedAsync(code: number | null,
-    signal: NodeJS.Signals | null): Promise<void> { }
 }
 
 const dispatcherChildProcess = new DispatcherChildProcess();
 dispatcherChildProcess.startAsync();
 
 // we shall keep waiting to make sure that this child process does not exit...
-// ThreadUtilities.waitAsync();
+ThreadUtilities.waitAsync();

@@ -1,8 +1,9 @@
-import { ServiceType } from "@shahadul-17/service-provider";
+import { ServiceScope, ServiceType } from "@shahadul-17/service-provider";
 
-export type DispatchableTaskInformation<ServiceClassType, ReturnType> = {
+export type DispatchableTaskInformation<ServiceInstanceType, ReturnType> = {
   methodName: string,
-  methodArguments: Array<any>,
-  serviceType: ServiceType<ServiceClassType>,
+  methodArguments?: Array<any>,
+  serviceType: ServiceType<ServiceInstanceType>,
+  serviceScopeName?: string,
   returnType: ServiceType<ReturnType>,
 };

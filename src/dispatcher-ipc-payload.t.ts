@@ -1,11 +1,12 @@
-import { DispatcherIpcFlag } from "./dispatcher-ipc-flag.e";
+import { DispatcherIpcPayloadFlag } from "./dispatcher-ipc-payload-flag.e";
 
 export type DispatcherIpcPayload = {
-  flag: DispatcherIpcFlag,
-  childProcessIndex: number,
-  taskId: string,
-  result: any,
-  serviceName: string,
-  methodName: string,
+  flag: DispatcherIpcPayloadFlag,
+  processId?: number,
+  payloadId?: string,
+  result?: any,
+  serviceName?: string,
+  serviceScopeName?: string,
+  methodName?: string,
   methodArguments?: Array<any>,
 };

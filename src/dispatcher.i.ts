@@ -1,4 +1,6 @@
+import { ServiceType } from "@shahadul-17/service-provider";
 import { DispatchableTaskInformation } from "./dispatchable-task-information.t";
+import { DispatcherOptions } from "./dispatcher-options.t";
 
 export interface IDispatcher {
 
@@ -6,23 +8,31 @@ export interface IDispatcher {
    * Returns true if the dispatcher is started.
    * Otherwise retuns false.
    */
-  isStarted(): boolean;
+  get isStarted(): boolean;
 
   /**
    * Gets the total number of processes used by this dispatcher.
    */
-  getProcessCount(): number;
+  get processCount(): number;
 
   /**
-   * Gets the total number of threads used by each process of this dispatcher.
+   * Gets the dispatcher options used while creating the dispatcher.
    */
-  getThreadCountPerProcess(): number;
+  get options(): DispatcherOptions;
 
   /**
    * Dispatches a task.
-   * @param taskInformation Task information to be dispatched.
+   * @param taskInformation Information of the task to be dispatched.
    */
   dispatchAsync<ServiceClassType, ReturnType>(taskInformation: DispatchableTaskInformation<ServiceClassType, ReturnType>): Promise<ReturnType>;
+
+  /**
+   * Retrieves a service.
+   * @param serviceType Type of the service class.
+   * @param scopeName Name of the scope.
+   * @returns The requested service.
+   */
+  getService<Type>(serviceType: ServiceType<Type>, scopeName?: string): Type;
 
   /**
    * Starts the dispatcher.
